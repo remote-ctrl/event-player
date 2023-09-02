@@ -1,47 +1,72 @@
 package co.remotectrl.ctrl.event
 
 class CtrlMutablePlayer<TMutable : CtrlMutable<TMutable>>(
-    var mutable: TMutable
+    var mutable: TMutable,
 ) {
-    fun playForEvent(event: CtrlEvent<TMutable>): CtrlTry<TMutable> = CtrlTry.invoke {
-        mutable = event.applyChangesTo(mutable)
-        mutable
+    fun play(
+        event: CtrlEvent<TMutable>
+    ): CtrlTry<CtrlMutableEventResult<TMutable>> {
+        val played = CtrlTry.invoke {
+            mutable = event.applyChangesTo(mutable)
+            CtrlMutableEventResult(mutable, event)
+        }
+
+        return when(played){
+            is CtrlTry.Failure -> playerFailure(
+                event = event,
+                failureCause = played.failureCause
+            )
+            is CtrlTry.Success -> played
+        }
     }
 
-    fun playForEvents(events: List<CtrlEvent<TMutable>>): CtrlTry<TMutable> {
-        var failure: CtrlTry<TMutable>? = null
-        for (evt in events) {
-            when (val played = playForEvent(evt)) {
+    fun play(
+        events: List<CtrlEvent<TMutable>>
+    ): List<CtrlTry<CtrlMutableEventResult<TMutable>>> = events.map {
+        play(it)
+    }
+
+    fun playEither(
+        events: List<CtrlEvent<TMutable>>
+    ): CtrlTry<CtrlMutableEventResult<TMutable>> {
+        if(events.isEmpty()){
+            return CtrlTry.Failure(failureCause = EmptyPlayableListCause())
+        }
+
+        var lastEvent: CtrlEvent<TMutable>? = null
+        for (i in events.indices) {
+            lastEvent = events[i]
+            when(val lastPlayed = play(lastEvent)){
+                is CtrlTry.Failure -> return lastPlayed
                 is CtrlTry.Success -> continue
-                is CtrlTry.Failure -> {
-                    failure = played
-                    break
-                }
             }
         }
 
-        return failure ?: CtrlTry.Success(mutable)
+        return CtrlTry.Success(CtrlMutableEventResult(mutable, lastEvent!!))
     }
 
-    fun eventForCommand(
-        command: CtrlCommand<TMutable>
-    ): CtrlTry<CtrlEvent<TMutable>> = CtrlTry {
-        return when (val result = CtrlTry(execute(command))){
-            is CtrlTry.Failure -> CtrlTry.Failure(result.failureCause)
-            is CtrlTry.Success -> CtrlTry.Success(result.result)
-        }
+    private fun playerFailure(
+        event: CtrlEvent<TMutable>,
+        failureCause: IFailureCause,
+    ): CtrlTry<CtrlMutableEventResult<TMutable>> {
+        return CtrlTry.Failure(
+            failureCause = CtrlMutableEventFailure(
+                failureCause,
+                CtrlMutableEventResult(mutable, event)
+            )
+        )
     }
 
-    fun execute(
-        command: CtrlCommand<TMutable>
-    ): CtrlExecution<TMutable, CtrlEvent<TMutable>, CtrlInvalidation> {
+    fun validate(
+        command: CtrlCommand<TMutable>,
+    ): CtrlTry<CtrlEvent<TMutable>> {
         val validation = CtrlValidation(mutableListOf())
 
         command.validate(mutable, validation)
 
         val validatedItems = validation.invalidInputItems.toTypedArray()
 
-        return when {
+        return CtrlTry(when {
             validatedItems.isNotEmpty() -> {
                 CtrlExecution.Invalidated(items = validatedItems)
             }
@@ -51,40 +76,62 @@ class CtrlMutablePlayer<TMutable : CtrlMutable<TMutable>>(
                     event = command.makeEvent()
                 )
             }
-        }
+        })
     }
 
-    fun playEventForCommand(
-        command: CtrlCommand<TMutable>
-    ): CtrlTry<Pair<TMutable, CtrlEvent<TMutable>>> {
-        return eventForCommand(command).flatMap {
-            when (val played = playForEvent(it)) {
-                is CtrlTry.Failure -> CtrlTry.Failure(failureCause = played.failureCause)
-                is CtrlTry.Success -> CtrlTry.Success(Pair(played.result, it))
-            }
-        }
+    fun execute(
+        command: CtrlCommand<TMutable>,
+    ): CtrlTry<CtrlMutableEventResult<TMutable>> = validate(command).flatMap {
+        play(it)
     }
 
-    fun playEventsForCommands(
+    fun execute(
         commands: List<CtrlCommand<TMutable>>
-    ): CtrlTry<Pair<TMutable, List<CtrlEvent<TMutable>>>> {
-        var error: CtrlTry<Pair<TMutable, List<CtrlEvent<TMutable>>>>? = null
-        val evts = mutableListOf<CtrlEvent<TMutable>>()
-        for (cmd in commands) {
-            when (val played = playEventForCommand(cmd)) {
-                is CtrlTry.Success -> {
-                    evts.add(played.result.second!!)
-                    continue
-                }
+    ): List<CtrlTry<CtrlMutableEventResult<TMutable>>> = commands.map {
+        execute(it)
+    }
 
-                is CtrlTry.Failure -> {
-                    error = CtrlTry.Failure(failureCause = played.failureCause)
-                    break
-                }
+    fun executeEither(
+        commands: List<CtrlCommand<TMutable>>
+    ): CtrlTry<CtrlMutableEventResult<TMutable>> {
+        if(commands.isEmpty()){
+            return CtrlTry.Failure(failureCause = EmptyPlayableListCause())
+        }
+
+        var lastEvent: CtrlEvent<TMutable>? = null
+        for (i in commands.indices) {
+            val played = validate(commands[i]).flatMap {
+                lastEvent = it
+                play(it)
+            }
+
+            when(played){
+                is CtrlTry.Failure ->
+                    return played
+                is CtrlTry.Success ->
+                    continue
             }
         }
 
-        return error ?: CtrlTry.Success(Pair(mutable, evts))
+        return CtrlTry.Success(CtrlMutableEventResult(mutable, lastEvent!!))
     }
+
 }
+
+data class CtrlMutableEventFailure<TMutable : CtrlMutable<TMutable>>(
+    override val failMessage: String,
+    val failureCause: IFailureCause,
+    val mutableEventResult: CtrlMutableEventResult<TMutable>,
+) : IFailureCause {
+    constructor(
+        failureCause: IFailureCause,
+        mutableEventResult: CtrlMutableEventResult<TMutable>
+    ) : this(
+        "trying to apply bad event [${mutableEventResult.event}] to mutable [${mutableEventResult.mutable}] but failed: [${failureCause.failMessage}]",
+        failureCause,
+        mutableEventResult
+    )
+}
+
+data class EmptyPlayableListCause(override val failMessage: String = "play requires at least one item") : IFailureCause
 

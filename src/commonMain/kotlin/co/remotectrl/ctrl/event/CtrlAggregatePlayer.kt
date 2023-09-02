@@ -1,7 +1,7 @@
 package co.remotectrl.ctrl.event
 
 class CtrlAggregatePlayer<TMutable : CtrlMutable<TMutable>>(
-    var aggregate: CtrlAggregate<TMutable>
+    var aggregate: CtrlAggregate<TMutable>,
 ) {
 
     private val mutablePlayer = CtrlMutablePlayer(
@@ -16,11 +16,13 @@ class CtrlAggregatePlayer<TMutable : CtrlMutable<TMutable>>(
         )
     }
 
-    fun playForEvent(
-        aggregateEvent: CtrlAggregateEvent<TMutable>
-    ): CtrlTry<CtrlAggregate<TMutable>> = CtrlTry.invoke {
+    fun play(
+        aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+        checkSequentialVersion: Boolean = false,
+    ): CtrlTry<CtrlAggregateEventResult<TMutable>> = CtrlTry.invoke {
         if (aggregateEvent.aggregateId.value != aggregate.id.value) {
-            return CtrlTry.Failure(
+            return playerFailure(
+                aggregateEvent = aggregateEvent,
                 failureCause = AggregateEventInvalidAggregateIdCause(
                     aggregateEvent = aggregateEvent,
                     aggregate = aggregate
@@ -29,8 +31,9 @@ class CtrlAggregatePlayer<TMutable : CtrlMutable<TMutable>>(
         }
 
         val expectedNextVersion = aggregate.latestVersion + 1
-        if (aggregateEvent.version != (expectedNextVersion)) {
-            return CtrlTry.Failure(
+        if (checkSequentialVersion && aggregateEvent.version != (expectedNextVersion)) {
+            return playerFailure(
+                aggregateEvent = aggregateEvent,
                 failureCause = AggregateEventInvalidVersionCause(
                     aggregateEvent = aggregateEvent,
                     expectedNextVersion = expectedNextVersion
@@ -38,67 +41,144 @@ class CtrlAggregatePlayer<TMutable : CtrlMutable<TMutable>>(
             )
         }
 
-        val applied = mutablePlayer.playForEvent(aggregateEvent.mutableEvent).map {
-            applyAggregate(aggregateEvent.version, it)
-            aggregate
-        }
+        return mutablePlay(aggregateEvent)
+    }
 
-        return when (applied) {
-            is CtrlTry.Failure -> CtrlTry.Failure(
-                failureCause = ApplyingBadEventCause(
-                    mutable = mutablePlayer.mutable,
-                    event = aggregateEvent.mutableEvent,
-                    causeMsg = applied.failureCause.failMessage
-                )
+    private fun playerFailure(
+        aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+        failureCause: IFailureCause,
+    ): CtrlTry<CtrlAggregateEventResult<TMutable>> {
+        return CtrlTry.Failure(
+            failureCause = CtrlAggregateEventFailure(
+                failureCause,
+                CtrlAggregateEventResult(aggregate, aggregateEvent)
             )
+        )
+    }
 
-            is CtrlTry.Success -> applied
+
+    fun play(
+        aggregateEvents: List<CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>>,
+    ): List<CtrlTry<CtrlAggregateEventResult<TMutable>>> = aggregateEvents.map {
+        play(it)
+    }
+
+    fun playEither(
+        aggregateEvents: List<CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>>,
+    ): CtrlTry<CtrlAggregateEventResult<TMutable>> = CtrlTry.invoke {
+        if (aggregateEvents.isEmpty()) {
+            return CtrlTry.Failure(failureCause = EmptyPlayableListCause())
+        }
+
+        var lastEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>? = null
+        for (i in aggregateEvents.indices) {
+            lastEvent = aggregateEvents[i]
+            when (val lastPlayed = play(lastEvent)) {
+                is CtrlTry.Failure -> return lastPlayed
+                is CtrlTry.Success -> continue
+            }
+        }
+
+        return CtrlTry.Success(CtrlAggregateEventResult(aggregate, lastEvent!!))
+    }
+
+    fun execute(
+        command: CtrlCommand<TMutable>,
+    ): CtrlTry<CtrlAggregateEventResult<TMutable>> = CtrlTry.invoke {
+        return validate(command).flatMap { event ->
+            mutablePlay(event)
         }
     }
 
-    fun playForEvents(
-        aggregateEvents: List<CtrlAggregateEvent<TMutable>>
-    ): CtrlTry<CtrlAggregate<TMutable>> = CtrlTry.invoke {
-
-        val latestVersion = aggregateEvents.last().version
-        return mutablePlayer.playForEvents(aggregateEvents.map { it.mutableEvent }).map {
-            applyAggregate(latestVersion, it)
-            aggregate
-        }
-
-    }
-
-    fun playEventForCommand(
-        command: CtrlCommand<TMutable>
-    ): CtrlTry<Pair<CtrlAggregate<TMutable>, CtrlEvent<TMutable>>> = CtrlTry.invoke {
-        return mutablePlayer.playEventForCommand(command).map {
-            applyAggregate((aggregate.latestVersion + 1), it.first)
-            Pair(aggregate, it.second)
+    private fun mutablePlay(
+        aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+    ): CtrlTry<CtrlAggregateEventResult<TMutable>> {
+        return when (val mutablePlayed = mutablePlayer.play(aggregateEvent.mutableEvent!!)) {
+            is CtrlTry.Failure -> playerFailure(
+                aggregateEvent = aggregateEvent,
+                failureCause = getMutableFailure(mutablePlayed)
+            )
+            is CtrlTry.Success -> {
+                applyAggregate(aggregateEvent.version, mutablePlayed.result.mutable)
+                CtrlTry.Success(
+                    CtrlAggregateEventResult(aggregate = aggregate, aggregateEvent = aggregateEvent)
+                )
+            }
         }
     }
 
-    fun playEventsForCommands(
-        commands: List<CtrlCommand<TMutable>>
-    ): CtrlTry<Pair<CtrlAggregate<TMutable>, List<CtrlEvent<TMutable>>>> = CtrlTry.invoke {
-        return mutablePlayer.playEventsForCommands(commands).map {
-            applyAggregate((aggregate.latestVersion + commands.size), it.first)
-            Pair(aggregate, it.second)
+    private fun getMutableFailure(mutablePlayed: CtrlTry.Failure<CtrlMutableEventResult<TMutable>>) =
+        when (val mutableEventFailure = mutablePlayed.failureCause) {
+            is CtrlMutableEventFailure<*> -> mutableEventFailure.failureCause
+            else -> mutableEventFailure
+        }
+
+    fun validate(
+        command: CtrlCommand<TMutable>,
+    ): CtrlTry<CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>> {
+        return mutablePlayer.validate(command).map {
+            CtrlAggregateEvent(
+                eventId = CtrlEventId(""),
+                aggregateId = aggregate.id,
+                version = aggregate.latestVersion + 1,
+                mutableEvent = it
+            )
         }
     }
 
-    fun eventForCommand(command: CtrlCommand<TMutable>): CtrlTry<CtrlEvent<TMutable>> {
-        return mutablePlayer.eventForCommand(command)
+    fun execute(
+        commands: List<CtrlCommand<TMutable>>,
+    ) = commands.map {
+        execute(it)
     }
+
+    fun executeEither(
+        commands: List<CtrlCommand<TMutable>>,
+    ): CtrlTry<CtrlAggregateEventResult<TMutable>> {
+        if (commands.isEmpty()) {
+            return CtrlTry.Failure(failureCause = EmptyPlayableListCause())
+        }
+
+        var lastEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>? = null
+        for (i in commands.indices) {
+            val played = validate(commands[i]).flatMap {
+                lastEvent = it
+                play(it)
+            }
+
+            when (played) {
+                is CtrlTry.Failure -> return played
+                is CtrlTry.Success -> continue
+            }
+        }
+
+        return CtrlTry.Success(CtrlAggregateEventResult(aggregate, lastEvent!!))
+    }
+}
+
+data class CtrlAggregateEventFailure<TMutable : CtrlMutable<TMutable>>(
+    override val failMessage: String,
+    val failureCause: IFailureCause,
+    val aggregateEventResult: CtrlAggregateEventResult<TMutable>,
+) : IFailureCause {
+    constructor(
+        failureCause: IFailureCause,
+        aggregateEventResult: CtrlAggregateEventResult<TMutable>,
+    ) : this(
+        failMessage = "player event encountered a failure: [${failureCause.failMessage}]",
+        failureCause = failureCause,
+        aggregateEventResult = aggregateEventResult
+    )
 }
 
 data class AggregateEventInvalidAggregateIdCause<TMutable : CtrlMutable<TMutable>>(
     override val failMessage: String,
-    val aggregateEvent: CtrlAggregateEvent<TMutable>,
-    val aggregate: CtrlAggregate<TMutable>
+    val aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+    val aggregate: CtrlAggregate<TMutable>,
 ) : IFailureCause {
     constructor(
-        aggregateEvent: CtrlAggregateEvent<TMutable>,
-        aggregate: CtrlAggregate<TMutable>
+        aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+        aggregate: CtrlAggregate<TMutable>,
     ) : this(
         "trying to apply event with aggregate id [${aggregateEvent.aggregateId.value}] when the player is handling changes for aggregate id [${aggregate.id.value}]",
         aggregateEvent,
@@ -108,31 +188,15 @@ data class AggregateEventInvalidAggregateIdCause<TMutable : CtrlMutable<TMutable
 
 data class AggregateEventInvalidVersionCause<TMutable : CtrlMutable<TMutable>>(
     override val failMessage: String,
-    val aggregateEvent: CtrlAggregateEvent<TMutable>,
-    val expectedNextVersion: Int
+    val aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+    val expectedNextVersion: Int,
 ) : IFailureCause {
     constructor(
-        aggregateEvent: CtrlAggregateEvent<TMutable>,
-        expectedNextVersion: Int
+        aggregateEvent: CtrlAggregateEvent<TMutable, CtrlEvent<TMutable>>,
+        expectedNextVersion: Int,
     ) : this(
         "trying to apply event with version [${aggregateEvent.version}] when the player's current aggregate is expecting next version to be [${expectedNextVersion}]",
         aggregateEvent,
         expectedNextVersion
-    )
-}
-
-data class ApplyingBadEventCause<TMutable : CtrlMutable<TMutable>>(
-    override val failMessage: String,
-    val mutable: TMutable,
-    val event: CtrlEvent<TMutable>
-) : IFailureCause {
-    constructor(
-        mutable: TMutable,
-        event: CtrlEvent<TMutable>,
-        causeMsg: String
-    ) : this(
-        "trying to apply bad event [${event}] to mutable [${mutable}] but failed: [$causeMsg]",
-        mutable,
-        event
     )
 }

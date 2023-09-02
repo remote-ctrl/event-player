@@ -6,7 +6,7 @@ data class CtrlAggregate<TMutable : CtrlMutable<TMutable>>(
     val mutable: TMutable
 )
 
-data class CtrlId<TMutable>(val value: String) where TMutable : CtrlMutable<TMutable>
+data class CtrlId<TMutable>(val value: String? = null) where TMutable : CtrlMutable<TMutable>
 
 data class NotFoundCause(
     override val failMessage: String,
