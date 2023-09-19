@@ -2,7 +2,7 @@ package co.remotectrl.ctrl.event
 
 class CtrlAggregatePlayer<TMutable : CtrlMutable<TMutable>>(
     var aggregate: CtrlAggregate<TMutable>,
-) {
+) : ICtrlPlayer<TMutable, CtrlAggregateEventResult<TMutable>> {
 
     private val mutablePlayer = CtrlMutablePlayer(
         mutable = aggregate.mutable
@@ -82,7 +82,7 @@ class CtrlAggregatePlayer<TMutable : CtrlMutable<TMutable>>(
         return CtrlTry.Success(CtrlAggregateEventResult(aggregate, lastEvent!!))
     }
 
-    fun execute(
+    override fun execute(
         command: CtrlCommand<TMutable>,
     ): CtrlTry<CtrlAggregateEventResult<TMutable>> = CtrlTry.invoke {
         return validate(command).flatMap { event ->

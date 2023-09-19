@@ -2,7 +2,8 @@ package co.remotectrl.ctrl.event
 
 class CtrlMutablePlayer<TMutable : CtrlMutable<TMutable>>(
     var mutable: TMutable,
-) {
+) : ICtrlPlayer<TMutable, CtrlMutableEventResult<TMutable>>{
+
     fun play(
         event: CtrlEvent<TMutable>
     ): CtrlTry<CtrlMutableEventResult<TMutable>> {
@@ -79,7 +80,7 @@ class CtrlMutablePlayer<TMutable : CtrlMutable<TMutable>>(
         })
     }
 
-    fun execute(
+    override fun execute(
         command: CtrlCommand<TMutable>,
     ): CtrlTry<CtrlMutableEventResult<TMutable>> = validate(command).flatMap {
         play(it)

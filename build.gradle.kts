@@ -5,8 +5,10 @@ buildscript {
 }
 
 plugins {
-    kotlin("multiplatform")
+    id("org.jetbrains.kotlin.multiplatform") version "1.9.10"
 }
+
+
 
 repositories {
     mavenCentral()

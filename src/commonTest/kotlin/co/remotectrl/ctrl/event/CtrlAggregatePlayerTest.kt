@@ -1,11 +1,23 @@
 package co.remotectrl.ctrl.event
 
+import co.remotectrl.ctrl.event.harness.ICtrlPlayerAggregateHarness
+import co.remotectrl.ctrl.event.harness.ICtrlPlayerMutableHarness
+import co.remotectrl.ctrl.event.harness.ICtrlPlayerTestHarnessBuilderData
 import co.remotectrl.ctrl.event.stub.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class ControlAggregatePlayerTest {
+data class StubMutableAggregateBuilderData(
+        val changeVal: Int
+) : ICtrlPlayerTestHarnessBuilderData
+
+class ControlAggregatePlayerTest : ICtrlPlayerAggregateHarness<StubMutable, Int, StubMutableAggregateBuilderData> {
+    override fun createMutable(extraData: StubMutableAggregateBuilderData?): StubMutable = StubMutable(
+            changeVal = extraData?.changeVal ?: 0
+    )
+
+    override fun getValue(mutable: StubMutable): Int = mutable.changeVal
 
     @Test
     fun given_Player_when_Command_executed_then_create_Event() {
