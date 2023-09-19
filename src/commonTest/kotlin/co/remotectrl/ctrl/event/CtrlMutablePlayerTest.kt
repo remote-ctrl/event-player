@@ -1,20 +1,30 @@
 package co.remotectrl.ctrl.event
 
+import co.remotectrl.ctrl.event.harness.ICtrlPlayerMutableHarness
+import co.remotectrl.ctrl.event.harness.ICtrlPlayerTestHarnessBuilderData
 import co.remotectrl.ctrl.event.stub.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class ControlMutablePlayerTest {
+object StubMutableBuilderData : ICtrlPlayerTestHarnessBuilderData
+
+class ControlMutablePlayerTest : ICtrlPlayerMutableHarness<StubMutable, Int, StubMutableBuilderData> {
+
+    override fun createMutable(extraData: StubMutableBuilderData?) : StubMutable = StubMutable(changeVal = 0)
+    override fun getValue(mutable: StubMutable): Int = mutable.changeVal
 
     @Test
-    fun given_Player_when_Command_executed_then_create_Event() {
-        val mutable = StubMutable(changeVal = 0)
-        val player = CtrlMutablePlayer(mutable = mutable)
-        val played = player.execute(command = StubChangeCommand())
-
-        assertPlayed<StubChangedEvent>(expectedChangeVal = 1, played)
-        assertPlayer(expectedChangeVal = 1, player)
+//    fun given_Player_when_Command_executed_then_create_Event() {
+//        val mutable = StubMutable(changeVal = 0)
+//        val player = CtrlMutablePlayer(mutable = mutable)
+//        val played = player.execute(command = StubChangeCommand())
+//
+//        assertPlayed<StubChangedEvent>(expectedChangeVal = 1, played)
+//        assertPlayer(expectedChangeVal = 1, player)
+//    }
+    fun given_Player_when_Command_executed_then_create_Event() = withPlayer(1) {
+        StubChangeCommand().executeAssert(1, StubChangedEvent::class)
     }
 
     @Test
@@ -231,7 +241,6 @@ class ControlMutablePlayerTest {
                 StubCountIteratorCommand() // not played
             )
         )
-
         assertPlayedFailed<InvalidCommandCause>(played)
         assertPlayer(expectedChangeVal = 2, player)
     }
